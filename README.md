@@ -7,8 +7,8 @@ This code with create a new workbook, with each several sheets
   1) Full_Data: the complete list of samples and genes with an added Health_Status column
   2) A sheet for each health status, with all genes across the top row and only samples with that health status going down the first column
      Note: May have to edit mappable health statuses
-     Current mappings are:
-            "Healthy": "Healthy"
+     Current mappings are: \n
+            "Healthy": "Healthy" \n
             "Diseased, Stable": "Stable PD"
             "Diseased; Stable": "Stable PD"
             "Diseased, Progressing": "Progressing PD"
