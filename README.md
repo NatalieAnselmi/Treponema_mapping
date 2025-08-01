@@ -8,13 +8,13 @@ This code with create a new workbook, with each several sheets
   2) A sheet for each health status, with all genes across the top row and only samples with that health status going down the first column
      Note: May have to edit mappable health statuses
      Current mappings are:
-            "Healthy": "Healthy",
-            "Diseased, Stable": "Stable PD",
-            "Diseased; Stable": "Stable PD",
-            "Diseased, Progressing": "Progressing PD",
-            "Diseased; Progressing": "Progressing PD",
-            "Diseased; Fluctuant": "Fluctuating PD",
-            "Diseased; Fluctuating": "Fluctuating PD",
+            "Healthy": "Healthy"
+            "Diseased, Stable": "Stable PD"
+            "Diseased; Stable": "Stable PD"
+            "Diseased, Progressing": "Progressing PD"
+            "Diseased; Progressing": "Progressing PD"
+            "Diseased; Fluctuant": "Fluctuating PD"
+            "Diseased; Fluctuating": "Fluctuating PD"
             "Diseased": "PD"
      3) 3 rows at the bottom of each sheet for
           1) The number of samples positive for that gene (row title includes total number of samples in that health status)
