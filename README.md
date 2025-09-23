@@ -1,16 +1,16 @@
 # Treponema_mapping
 
-Set up
-	1.	If data in text file, convert to excel file
-	2.	Go to https://www.ncbi.nlm.nih.gov/home/genomes/ and search for species and strain of interest
-	⁃	Download —> Genebank only —> Sequence and annotation (GBFF) only
-	⁃	unzip download, find the .gbff file (nested a few folders in) and move it to your work folder
-	3.	Make sure you have a metadata folder listing the health status of each sample
-	4.	Run genome_to_fasta.py to convert the .gbff into a cleanly FASTA formatted full genome text file. Can select whether you would like sequences named by gene locus or protein product (repeated named like ‘hypothetical protein’ will be assigned an integer)
-	⁃	Go to http://eggnog-mapper.embl.de/ and submit the full genome FASTA
-	⁃	Download as excel file and rename as needed
+Set up  
+	1.	If data in text file, convert to excel file  
+	2.	Go to https://www.ncbi.nlm.nih.gov/home/genomes/ and search for species and strain of interest  
+	⁃	Download —> Genebank only —> Sequence and annotation (GBFF) only  
+	⁃	unzip download, find the .gbff file (nested a few folders in) and move it to your work folder  
+	3.	Make sure you have a metadata folder listing the health status of each sample  
+	4.	Run genome_to_fasta.py to convert the .gbff into a cleanly FASTA formatted full genome text file. Can select whether you would like sequences named by gene locus or protein product (repeated named like ‘hypothetical protein’ will be assigned an integer)  
+	⁃	Go to http://eggnog-mapper.embl.de/ and submit the full genome FASTA  
+	⁃	Download as excel file and rename as needed  
 
-Data Analysis
+Data Analysis  
 	1.	Run sort_and_sumarize.py  to create a new workbook (Mapped Data) with data in sheets based on health status
 	⁃	Requires
 	⁃	Excel data table with sample names, gene names/loci, reads
