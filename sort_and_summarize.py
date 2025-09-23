@@ -3,36 +3,15 @@ import numpy as np
 import pandas as pd
 import openpyxl
 from openpyxl.styles import Font
-from tkinter import Tk, filedialog, messagebox
+from tkinter import Tk, filedialog, messagebox, StringVar, BooleanVar
+import tkinter as tk
 from scipy.stats import f_oneway, kruskal, anderson
 from statsmodels.stats.multicomp import pairwise_tukeyhsd
 import scikit_posthocs as sp
+from Bio import SeqIO
 
 # =========================
-# GUI: pick files & save-as
-# =========================
-def pick_file(title):
-    root = Tk()
-    root.withdraw()
-    fp = filedialog.askopenfilename(
-        title=title,
-        filetypes=[("Excel files", "*.xlsx *.xls")]
-    )
-    return fp or ""
-
-def pick_save_path(default_name="OUTPUT.xlsx"):
-    root = Tk()
-    root.withdraw()
-    fp = filedialog.asksaveasfilename(
-        title="Save output workbook as...",
-        defaultextension=".xlsx",
-        initialfile=default_name,
-        filetypes=[("Excel files", "*.xlsx")]
-    )
-    return fp or ""
-
-# =========================
-# Helpers for organizing code
+# Helpers for organizing code 
 # =========================
 def clean_sample(s):
     if pd.isna(s):
@@ -64,13 +43,15 @@ def map_health_status(status):
     return status
 
 # =========================
-# Pipeline: write base sheets
+# Pipeline: write base sheets (modified to accept locus->product mapping)
 # =========================
-def write_base_sheets(input_path, meta_path, output_path):
+def write_base_sheets(input_path, meta_path, output_path, locus_to_product=None):
     """Reads INPUT and METADATA, maps health status, writes:
        - Full_Data
        - One sheet per Mapped_Health_Status
-       - Unmatched (if any)"""
+       - Unmatched (if any)
+       If locus_to_product is provided, replace column headers (from 3rd column onward)
+       with the product names using that mapping before writing the sheets."""
     
     data_df = pd.read_excel(input_path)
     lookup_df = pd.read_excel(meta_path)
@@ -96,9 +77,39 @@ def write_base_sheets(input_path, meta_path, output_path):
         cols.insert(sample_col_idx + 1, 'Mapped_Health_Status')
         data_df = data_df[cols]
 
-    # Write workbook (Full_Data + per-status + Unmatched)
+    # If mapping provided, create a copy with header replacement for writing
+    def apply_header_mapping(df):
+        if locus_to_product is None:
+            return df
+        df2 = df.copy()
+        cols = list(df2.columns)
+
+        # Track occurrences for numbering repeats
+        name_counts = {}
+
+        for i in range(2, len(cols)):  # 3rd col onward
+            orig = cols[i]
+            product = locus_to_product.get(str(orig), orig)
+
+            # 1) Remove commas
+            product = product.replace(",", "")
+
+            # 2) Assign unique numbers for duplicates
+            if product in name_counts:
+                name_counts[product] += 1
+                product = f"{product} {name_counts[product]}"
+            else:
+                name_counts[product] = 1
+
+            cols[i] = product
+
+        df2.columns = cols
+        return df2
+
+    # Write workbook (Full_Data + per-status + Unmatched) using mapped headers if requested
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
-        data_df.to_excel(writer, sheet_name='Full_Data', index=False)
+        # Full_Data: write mapped header version
+        apply_header_mapping(data_df).to_excel(writer, sheet_name='Full_Data', index=False)
 
         # Per-status sheets
         grouped = data_df.groupby('Mapped_Health_Status', dropna=False)
@@ -106,21 +117,19 @@ def write_base_sheets(input_path, meta_path, output_path):
             if pd.isna(name):
                 continue
             safe_name = str(name)[:31] if name else "Unknown"
-            group.to_excel(writer, sheet_name=safe_name, index=False)
+            apply_header_mapping(group).to_excel(writer, sheet_name=safe_name, index=False)
 
         # Unmatched
         unmatched = data_df[data_df['Mapped_Health_Status'].isna()]
         if not unmatched.empty:
-            unmatched.to_excel(writer, sheet_name='Unmatched', index=False)
+            apply_header_mapping(unmatched).to_excel(writer, sheet_name='Unmatched', index=False)
 
     return output_path
 
 # =========================
-# Summary construction snd Stats
+# Summary construction and Stats
 # =========================
-
 def get_gene_percent_bins():
-    # bins length = labels length + 1
     bins = np.array([0, 5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 100.1])
     labels = ["[0]", "(0-5]", "(5-10]", "(10-20]", "(20-30]", "(30-40]",
               "(40-50]", "(50-60]", "(60-70]", "(70-80]", "(80-90]", "(90-100]"]
@@ -139,10 +148,7 @@ def get_health_status_sheets(wb):
     return [ws.title for ws in wb.worksheets if ws.title not in ("Summary", "Full_Data", "Unmatched")]
 
 def extract_status_gene_matrix(ws):
-    # Structure assumed like Code 3's per-status sheets:
-    # Row1: headers -> [Sample, Mapped_Health_Status, Gene1, Gene2, ...]
-    # Rows2..N: samples, last 4 rows are stats reserved — we keep the same logic
-    max_row = ws.max_row #- 4 if ws.max_row >= 6 else ws.max_row  # guard small sheets
+    max_row = ws.max_row
     max_col = ws.max_column
 
     n_samples = max(0, max_row - 1)  # samples start at row 2
@@ -345,7 +351,6 @@ def write_posthoc_results(ws, posthoc_result, test_type, start_row, start_col):
         return start_row + 2
 
 def test_normality_and_anova(status_values):
-    """Per-group Anderson–Darling (raw & log), choose test, then Tukey/Dunn (FDR-BH)."""
     normality = {}
     lognormality = {}
 
@@ -379,7 +384,6 @@ def test_normality_and_anova(status_values):
     all_normal = all(normality.values()) if normality else False
     all_lognormal = all(lognormality.values()) if lognormality else False
 
-    # Choose global test
     if all_normal:
         anova_type = 'ANOVA'
         anova_result = f_oneway(*[np.asarray(status_values[st], dtype=float) for st in status_values])
@@ -424,7 +428,6 @@ def test_normality_and_anova(status_values):
     }
 
 def write_abundance_stats(ws, wb, health_statuses, start_row, start_col):
-    # Gather values by status (all abundances across all genes/samples)
     status_values = {status: [] for status in health_statuses}
 
     for ws_status in wb.worksheets:
@@ -480,16 +483,13 @@ def write_abundance_stats(ws, wb, health_statuses, start_row, start_col):
                 )
         current_row += len(stats_labels) + 2
 
-    # Non-zero abundance values per status for hypothesis testing
     nonzero_status_values = {
         status: status_values[status][status_values[status] > 0]
         for status in health_statuses
     }
 
-    # Integrated test (per-group A-D raw/log, ANOVA/log-ANOVA/Kruskal, Tukey/Dunn)
     test_results = test_normality_and_anova(nonzero_status_values)
 
-    # Write results
     summary_start = current_row + 1
     ws.cell(row=summary_start, column=start_col).value = "Normality Test (Anderson-Darling)"
     ws.cell(row=summary_start, column=start_col).font = Font(bold=True)
@@ -501,7 +501,7 @@ def write_abundance_stats(ws, wb, health_statuses, start_row, start_col):
 
     row += 1
     ws.cell(row=row, column=start_col).value = "Lognormality Test (Anderson-Darling on log data)"
-    ws.cell(row=row, column=start_col).font = Font(bold=True)
+    ws.cell(row=row, column=start_row).font = Font(bold=True)
     row += 1
     for status in health_statuses:
         lognorm = "Yes" if test_results['lognormality'].get(status, False) else "No"
@@ -522,10 +522,9 @@ def write_abundance_stats(ws, wb, health_statuses, start_row, start_col):
     return posthoc_end_row
 
 # =========================
-# Pos. Genes
+# Pos. Genes 
 # =========================
 def get_positive_genes(ws, health_statuses):
-    """Read 'Summary' sheet: for each status, find 'Percent pos.' column and list genes > 0."""
     header_row = 1
     subheader_row = 2
     gene_col = 1  # Column A holds gene names
@@ -539,7 +538,6 @@ def get_positive_genes(ws, health_statuses):
                 status = cell_value
                 for row in range(subheader_row + 1, ws.max_row + 1):
                     p_val = ws.cell(row=row, column=col).value
-                    # Stored as fraction (0..1)
                     if p_val is not None and isinstance(p_val, (int, float)) and p_val > 0:
                         gene_name = ws.cell(row=row, column=gene_col).value
                         if gene_name:
@@ -558,94 +556,210 @@ def write_positive_genes(wb, positive_genes):
             ws_new.cell(row=row_idx, column=col_idx).value = gene
 
 # =========================
+# GBFF parsing helper
+# =========================
+def build_locus_to_product_map(gbff_path):
+    locus_to_product = {}
+    for record in SeqIO.parse(gbff_path, "genbank"):
+        for feature in record.features:
+            if feature.type == "CDS":
+                locus_tags = feature.qualifiers.get("locus_tag", [])
+                products = feature.qualifiers.get("product", [])
+                if locus_tags and products:
+                    locus_to_product[locus_tags[0]] = products[0]
+    return locus_to_product
+
+# =========================
+# Main 
+# =========================
 def main():
-    # 1) Pick files
-    input_path = pick_file("Select INPUT Excel (RPKM matrix)")
-    if not input_path:
-        messagebox.showerror("Missing file", "No INPUT file selected.")
-        return
+    # ---- GUI window ----
+    root = tk.Tk()
+    root.title("Run Pipeline")
+    root.geometry("520x320")
 
-    meta_path = pick_file("Select METADATA Excel (with Sample, Health_Status)")
-    if not meta_path:
-        messagebox.showerror("Missing file", "No METADATA file selected.")
-        return
+    input_path_var = StringVar(value="")
+    meta_path_var = StringVar(value="")
+    gbff_path_var = StringVar(value="")
+    convert_var = BooleanVar(value=False)
 
-    default_out = os.path.splitext(os.path.basename(input_path))[0] + "_OUTPUT.xlsx"
-    output_path = pick_save_path(default_out)
-    if not output_path:
-        messagebox.showerror("Missing output", "No output path selected.")
-        return
+    def choose_input():
+        p = filedialog.askopenfilename(title="Select INPUT Excel (RPKM matrix)",
+                                       filetypes=[("Excel files", "*.xlsx *.xls")])
+        if p:
+            input_path_var.set(p)
+            btn_input.config(text=os.path.basename(p))
+            check_enable_run()
 
-    # 2) Write base sheets (Full_Data, per-status, Unmatched)
-    write_base_sheets(input_path, meta_path, output_path)
-    print("Data organized into health status sheets")
+    def choose_meta():
+        p = filedialog.askopenfilename(title="Select METADATA Excel",
+                                       filetypes=[("Excel files", "*.xlsx *.xls")])
+        if p:
+            meta_path_var.set(p)
+            btn_meta.config(text=os.path.basename(p))
+            check_enable_run()
 
-    # 3) Open the workbook to build Summary & Pos. Genes
-    wb = openpyxl.load_workbook(output_path, data_only=True)
+    def choose_gbff():
+        p = filedialog.askopenfilename(title="Select .gbff (GenBank) file",
+                                       filetypes=[("GBFF files", "*.gbff *.gbk"), ("All files", "*.*")])
+        if p:
+            gbff_path_var.set(p)
+            gbff_button.config(text=os.path.basename(p))
+            check_enable_run()
 
-    # Remove Summary if exists and rebuild it
-    if "Summary" in wb.sheetnames:
-        del wb["Summary"]
-    summary_ws = wb.create_sheet("Summary")
+    def toggle_gbff():
+        if convert_var.get():
+            gbff_button.pack(anchor="w", pady=5)
+        else:
+            gbff_button.pack_forget()
+            gbff_path_var.set("")
+            gbff_button.config(text="Select GBFF")
+        check_enable_run()
 
-    # Determine available health status sheets
-    health_status_sheets = get_health_status_sheets(wb)
-    # Sort for consistent layout
-    preferred_order = ["Healthy", "PD", "Stable PD", "Fluctuating PD", "Progressing PD"]
-    # keep only those that exist, in the preferred order, then append any others
-    ordered = [s for s in preferred_order if s in health_status_sheets]
-    others = [s for s in health_status_sheets if s not in ordered]
-    health_status_sheets = ordered + sorted(others)
+    def check_enable_run():
+        inp = bool(input_path_var.get())
+        meta = bool(meta_path_var.get())
+        if convert_var.get():
+            gb = bool(gbff_path_var.get())
+            enabled = inp and meta and gb
+        else:
+            enabled = inp and meta
+        btn_run.config(state="normal" if enabled else "disabled")
 
-    # 4) Build Summary
-    gene_names, percent_positive, mean_all, mean_nonzero = compute_gene_stats_per_status(wb, health_status_sheets)
-    percent_bins, percent_labels = get_gene_percent_bins()
-    abundance_bins, abundance_labels = get_abundance_bins()
-    print("Built Summary table")
+    # Title label
+    tk.Label(root, text="Select required files and options", font=("Arial", 12, "bold")).pack(pady=8)
 
-    # 4a) Main gene table at left
-    last_summary_row = write_summary_table(
-        summary_ws, gene_names, percent_positive, mean_all, mean_nonzero, health_status_sheets, start_col=1
-    )
+    # Frame for Input/Metadata buttons
+    frame_files = tk.Frame(root)
+    frame_files.pack(pady=6)
 
-    # 4b) Percent positive distribution (to the right of the gene table)
-    summary_col_width = 1 + 3 * len(health_status_sheets)
-    abundance_start_col = summary_col_width + 2
+    btn_input = tk.Button(frame_files, text="Select Input", width=30, command=choose_input)
+    btn_input.grid(row=0, column=0, padx=8, pady=6)
 
-    percent_end_row = write_percent_positive_distribution(
-        summary_ws, percent_positive, health_status_sheets,
-        percent_bins, percent_labels,
-        start_row=1,
-        start_col=abundance_start_col
-    )
+    btn_meta = tk.Button(frame_files, text="Select Metadata", width=30, command=choose_meta)
+    btn_meta.grid(row=1, column=0, padx=8, pady=6)
 
-    # 4c) Abundance distribution (below percent positive distribution)
-    abundance_start_row = percent_end_row + 2
-    abundance_end_row = write_abundance_distribution(
-        summary_ws, wb, health_status_sheets,
-        abundance_bins, abundance_labels,
-        start_row=abundance_start_row,
-        start_col=abundance_start_col
-    )
+    # Frame for checkbox and GBFF button
+    checkbox_frame = tk.Frame(root)
+    checkbox_frame.pack(pady=10)
 
-    # 4d) Abundance stats + AD normality/lognormality + chosen test + posthoc
-    stats_start_row = abundance_end_row + 2
-    _ = write_abundance_stats(
-        summary_ws, wb, health_status_sheets,
-        start_row=stats_start_row,
-        start_col=abundance_start_col
-    )
-    print("Constructed stats tables")
+    convert_checkbox = tk.Checkbutton(checkbox_frame, text="Convert gene loci to gene products?",
+                                      variable=convert_var, command=toggle_gbff)
+    convert_checkbox.pack(anchor="w")
 
-    # 5) Build "Pos. Genes" sheet from the Summary
-    positive = get_positive_genes(summary_ws, health_status_sheets)
-    write_positive_genes(wb, positive)
-    print("Organized lists of positive genes")
+    gbff_button = tk.Button(checkbox_frame, text="Select GBFF", command=choose_gbff)
+    gbff_button.pack_forget()  # Hidden until checkbox toggled
 
-    # 6) Save
-    wb.save(output_path)
-    print(f"✅✅✅ Output written to:\n{output_path} ✅✅✅")
+    # Run button at bottom
+    btn_run = tk.Button(root, text="Run pipeline", bg="lightgreen", state="disabled")
+    btn_run.pack(pady=10)
 
-# ====================
+    def run_pipeline():
+        input_path = input_path_var.get()
+        meta_path = meta_path_var.get()
+        gbff_path = gbff_path_var.get() if convert_var.get() else None
+
+        if not input_path:
+            messagebox.showerror("Missing file", "No INPUT file selected.")
+            return
+        if not meta_path:
+            messagebox.showerror("Missing file", "No METADATA file selected.")
+            return
+        if convert_var.get() and not gbff_path:
+            messagebox.showerror("Missing file", "Conversion selected but no GBFF provided.")
+            return
+
+        default_out = os.path.splitext(os.path.basename(input_path))[0] + "_OUTPUT.xlsx"
+        out_path = filedialog.asksaveasfilename(title="Save output workbook as...",
+                                                defaultextension=".xlsx",
+                                                initialfile=default_out,
+                                                filetypes=[("Excel files", "*.xlsx")])
+        if not out_path:
+            return
+
+        # Build locus->product map if requested
+        locus_map = None
+        if convert_var.get():
+            try:
+                locus_map = build_locus_to_product_map(gbff_path)
+                if not locus_map:
+                    messagebox.showwarning("Warning", "No locus->product mappings found in GBFF. Will keep loci as-is.")
+                    locus_map = None
+            except Exception as e:
+                messagebox.showerror("Error parsing GBFF", f"Error while parsing GBFF:\n{e}")
+                return
+
+        # Run existing pipeline steps
+        write_base_sheets(input_path, meta_path, out_path, locus_to_product=locus_map)
+        messagebox.showinfo("Done", "Base sheets written.")
+
+        # Rest of pipeline: open workbook and build Summary & Pos. Genes
+        wb = openpyxl.load_workbook(out_path, data_only=True)
+
+        # Remove Summary if exists and rebuild it
+        if "Summary" in wb.sheetnames:
+            del wb["Summary"]
+        summary_ws = wb.create_sheet("Summary")
+
+        # Determine available health status sheets
+        health_status_sheets = get_health_status_sheets(wb)
+        preferred_order = ["Healthy", "PD", "Stable PD", "Fluctuating PD", "Progressing PD"]
+        ordered = [s for s in preferred_order if s in health_status_sheets]
+        others = [s for s in health_status_sheets if s not in ordered]
+        health_status_sheets = ordered + sorted(others)
+
+        # Build Summary
+        gene_names, percent_positive, mean_all, mean_nonzero = compute_gene_stats_per_status(wb, health_status_sheets)
+        percent_bins, percent_labels = get_gene_percent_bins()
+        abundance_bins, abundance_labels = get_abundance_bins()
+
+        # Main gene table at left
+        last_summary_row = write_summary_table(
+            summary_ws, gene_names, percent_positive, mean_all, mean_nonzero, health_status_sheets, start_col=1
+        )
+
+        # Percent positive distribution (to the right of the gene table)
+        summary_col_width = 1 + 3 * len(health_status_sheets)
+        abundance_start_col = summary_col_width + 2
+
+        percent_end_row = write_percent_positive_distribution(
+            summary_ws, percent_positive, health_status_sheets,
+            percent_bins, percent_labels,
+            start_row=1,
+            start_col=abundance_start_col
+        )
+
+        # Abundance distribution (below percent positive distribution)
+        abundance_start_row = percent_end_row + 2
+        abundance_end_row = write_abundance_distribution(
+            summary_ws, wb, health_status_sheets,
+            abundance_bins, abundance_labels,
+            start_row=abundance_start_row,
+            start_col=abundance_start_col
+        )
+
+        # Abundance stats + AD normality/lognormality + chosen test + posthoc
+        stats_start_row = abundance_end_row + 2
+        _ = write_abundance_stats(
+            summary_ws, wb, health_status_sheets,
+            start_row=stats_start_row,
+            start_col=abundance_start_col
+        )
+
+        # Pos. Genes
+        positive = get_positive_genes(summary_ws, health_status_sheets)
+        write_positive_genes(wb, positive)
+
+        # Save workbook
+        wb.save(out_path)
+        messagebox.showinfo("Finished", f"Output written to:\n{out_path}")
+        root.quit()
+
+    btn_run.config(command=run_pipeline)
+    btn_run.pack(pady=10)
+
+    root.mainloop()
+
+
 if __name__ == "__main__":
     main()
